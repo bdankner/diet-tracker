@@ -985,32 +985,45 @@ function renderResults(foods) {
   const list = document.getElementById('results-list');
   foods.forEach(food => {
     const nuts = food.foodNutrients||[];
-    // Raw nutrient values from API (always per 100g for SR Legacy/Foundation, per servingSize for Branded)
+    // Raw nutrient values from API
     const rawCal=getNutrient(nuts,[1008,208]), rawPro=getNutrient(nuts,[1003,203]),
           rawCar=getNutrient(nuts,[1005,205]), rawFat=getNutrient(nuts,[1004,204]);
-    // For branded foods the API gives nutrients per serving, not per 100g
-    // servingSize tells us how many grams that serving is — normalise everything to per-100g so
-    // our quantity math stays consistent, then re-scale back when displaying the default serving.
-    const svcSize = food.servingSize || 100;          // grams of one serving (branded) or 100 (generic)
+
+    // USDA API nutrient basis:
+    //   SR Legacy, Foundation, Survey (FNDDS) → always per 100g
+    //   Branded → per the food's servingSize
+    const isBranded = food.dataType === 'Branded';
+    const svcSize = food.servingSize || 100;
     const svcUnit = (food.servingSizeUnit||'g').toLowerCase();
-    // Convert oz servings to grams
-    const svcGrams = svcUnit==='oz' ? svcSize*28.3495 : svcSize;
-    // Normalise: if branded (has servingSize != 100), API already gave per-serving values → convert to per-100g
-    const isBranded = !!food.servingSize && food.dataType === 'Branded';
-    const per100Cal = isBranded ? rawCal*(100/svcGrams) : rawCal;
-    const per100Pro = isBranded ? rawPro*(100/svcGrams) : rawPro;
-    const per100Car = isBranded ? rawCar*(100/svcGrams) : rawCar;
-    const per100Fat = isBranded ? rawFat*(100/svcGrams) : rawFat;
-    // Display macros for 1 serving
-    const dispCal=Math.round(per100Cal*svcGrams/100), dispPro=Math.round(per100Pro*svcGrams/100*10)/10,
-          dispCar=Math.round(per100Car*svcGrams/100*10)/10, dispFat=Math.round(per100Fat*svcGrams/100*10)/10;
-    const svcLabel = `1 serving (${Math.round(svcGrams)}g)`;
+    const svcGrams = svcUnit==='oz' ? svcSize*28.3495 : (svcUnit==='ml' ? svcSize : svcSize);
+
+    // Sanity-check: for non-branded foods the nutrients are per 100g regardless of servingSize.
+    // For branded foods, normalise to per-100g so all downstream math is consistent.
+    let per100Cal, per100Pro, per100Car, per100Fat;
+    if (isBranded && svcGrams > 0) {
+      per100Cal = rawCal * (100 / svcGrams);
+      per100Pro = rawPro * (100 / svcGrams);
+      per100Car = rawCar * (100 / svcGrams);
+      per100Fat = rawFat * (100 / svcGrams);
+    } else {
+      // SR Legacy / Foundation: values already per 100g
+      per100Cal = rawCal; per100Pro = rawPro; per100Car = rawCar; per100Fat = rawFat;
+    }
+
+    // Sanity check: if per100Cal is unreasonably high (>900) or zero for a real food,
+    // the API entry is suspect — cap display but store as-is so the user sees something.
+    // Default display serving: for branded use their serving size; for generic use 100g.
+    const displayGrams = isBranded ? svcGrams : 100;
+    const dispCal=Math.round(per100Cal*displayGrams/100), dispPro=Math.round(per100Pro*displayGrams/100*10)/10,
+          dispCar=Math.round(per100Car*displayGrams/100*10)/10, dispFat=Math.round(per100Fat*displayGrams/100*10)/10;
+    const svcLabel = isBranded ? `1 serving (${Math.round(svcGrams)}g)` : `per 100g`;
+    const dataTag = food.dataType==='Branded' ? '' : ` · ${food.dataType||'USDA'}`;
     const item = document.createElement('div');
     item.className = 'search-result';
     item.innerHTML = `
       <div>
         <div class="result-name">${escHtml(food.description)}</div>
-        <div class="result-brand">${food.brandOwner?escHtml(food.brandOwner)+' · ':''}<span style="color:var(--muted)">${svcLabel}</span></div>
+        <div class="result-brand">${food.brandOwner?escHtml(food.brandOwner)+' · ':''}<span style="color:var(--muted)">${svcLabel}${dataTag}</span></div>
       </div>
       <div class="result-macros">
         <div class="m-cal">${dispCal}<br><span style="color:var(--muted);font-size:0.6em">KCAL</span></div>
@@ -1022,8 +1035,10 @@ function renderResults(foods) {
     item.addEventListener('click', () => selectFood({
       name: food.description,
       per100Cal, per100Pro, per100Car, per100Fat,
-      defaultServingG: svcGrams,
-      defaultServingLabel: svcLabel
+      defaultServingG: isBranded ? svcGrams : 100,
+      defaultServingLabel: svcLabel,
+      isBranded: isBranded,
+      dataType: food.dataType
     }));
     list.appendChild(item);
   });
