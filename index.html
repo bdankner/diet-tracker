@@ -412,6 +412,48 @@
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  /* ── Export / Import ── */
+  .data-section {
+    margin-top: 24px;
+    border-top: 1px solid var(--border);
+    padding-top: 20px;
+  }
+  .data-btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .data-btn {
+    flex: 1;
+    min-width: 130px;
+    padding: 11px 16px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+  }
+  .data-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .data-btn.danger:hover { border-color: var(--accent3); color: var(--accent3); }
+  .data-btn.import-btn { position: relative; overflow: hidden; }
+  .data-btn.import-btn input[type=file] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer; font-size: 100px;
+  }
+  .import-status {
+    margin-top: 10px;
+    font-size: 0.78rem;
+    border-radius: 8px;
+    padding: 8px 12px;
+    display: none;
+  }
+  .import-status.success { background: rgba(200,241,53,0.1); color: var(--accent); display: block; }
+  .import-status.error   { background: rgba(255,107,107,0.1); color: var(--accent3); display: block; }
+  .data-note { font-size: 0.7rem; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+
 </style>
 </head>
 <body>
@@ -586,6 +628,20 @@
     <div style="margin-top:10px;">
       <button class="save-goals-btn" onclick="saveGoals()">Save Goals</button>
       <span class="saved-badge" id="saved-badge">✓ Saved</span>
+    </div>
+
+    <div class="data-section">
+      <div class="section-title">BACKUP & RESTORE</div>
+      <div class="data-note">Export saves all your food logs, workouts, steps, and goals as a JSON file. Import merges a backup into your current data — existing entries are kept.</div>
+      <div class="data-btn-row">
+        <button class="data-btn" onclick="exportData()">⬇ Export Backup</button>
+        <label class="data-btn import-btn">
+          ⬆ Import Backup
+          <input type="file" accept=".json" onchange="importData(event)">
+        </label>
+        <button class="data-btn danger" onclick="clearAllData()">🗑 Clear All Data</button>
+      </div>
+      <div class="import-status" id="import-status"></div>
     </div>
   </div>
 
@@ -1182,6 +1238,87 @@ function renderDashboard() {
       <span><span style="color:var(--burn-color)">■</span> Burned</span>
       <span>Goal: ${goals.cal} kcal</span>
     </div>`;
+}
+
+// ── Export / Import / Clear ──
+function exportData() {
+  const payload = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    goals: goals,
+    log: logData,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const dateStr = new Date().toISOString().split('T')[0];
+  a.href = url;
+  a.download = `fuel-backup-${dateStr}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function importData(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById('import-status');
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const payload = JSON.parse(e.target.result);
+      if (!payload.version || !payload.log) throw new Error('Invalid backup file format.');
+
+      // Merge log: imported days take precedence only if the local day is empty
+      let added = 0, skipped = 0;
+      Object.keys(payload.log).forEach(date => {
+        if (!logData[date] || isDayEmpty(logData[date])) {
+          logData[date] = payload.log[date];
+          added++;
+        } else {
+          skipped++;
+        }
+      });
+
+      // Merge goals only if not already set
+      if (payload.goals) {
+        goals = { ...payload.goals, ...goals }; // local goals win on conflict
+        localStorage.setItem('fuelGoals', JSON.stringify(goals));
+        loadGoalsForm();
+      }
+
+      saveLog();
+      renderLog();
+
+      let msg = `✓ Imported ${added} day${added!==1?'s':''}.`;
+      if (skipped > 0) msg += ` ${skipped} day${skipped!==1?'s':''} skipped (already had data).`;
+      statusEl.textContent = msg;
+      statusEl.className = 'import-status success';
+    } catch(err) {
+      statusEl.textContent = '✕ Import failed: ' + err.message;
+      statusEl.className = 'import-status error';
+    }
+    // Reset file input so same file can be re-imported if needed
+    event.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
+function isDayEmpty(day) {
+  if (!day) return true;
+  const hasFood = ['breakfast','lunch','dinner','snacks'].some(m => (day[m]||[]).length > 0);
+  const hasWorkout = (day.workouts||[]).length > 0;
+  const hasSteps = (day.steps||0) > 0;
+  return !hasFood && !hasWorkout && !hasSteps;
+}
+
+function clearAllData() {
+  if (!confirm('Delete ALL food logs, workouts, and step data? This cannot be undone.\n\nTip: export a backup first.')) return;
+  logData = {};
+  saveLog();
+  renderLog();
+  const statusEl = document.getElementById('import-status');
+  statusEl.textContent = '✓ All data cleared.';
+  statusEl.className = 'import-status success';
 }
 
 // ── Util ──
